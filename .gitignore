@@ -12,3 +12,5 @@ logs/
 
 # Claude Code local
 .claude/settings.local.json
+
+rpa_v2/saida/
