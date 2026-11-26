@@ -80,7 +80,12 @@ def focar(h, timeout=2.0):
         return f and (f == h or win32.pai(f) == h)  # aceita filho direto (ex.: EDIT do DateTimePicker)
     if tem_foco():
         return
-    uia_min.focar_hwnd(h)
+    try:
+        uia_min.focar_hwnd(h)
+    except Exception as e:  # RM ocupado: SetFocus da acessibilidade estourou o tempo
+        log(f"   foco por acessibilidade falhou ({type(e).__name__}); clicando no campo")
+        l, t, r, b = win32.rect(h)
+        teclado.clicar((l + r) // 2, (t + b) // 2)
     win32.esperar(tem_foco, timeout, f"foco no hwnd {h}")
 
 
@@ -98,6 +103,21 @@ def digitar_campo(h, valor: str, tab=True, intervalo=0.0, limpar=True):
     teclado.digitar(valor, intervalo)
     if tab:
         teclado.atalho("tab")
+
+
+def esperar_texto(h, ok, timeout, descricao):
+    """Espera ok(texto_do_campo) ser verdadeiro. O RM de producao pode demorar a processar as teclas
+    enviadas: ler logo apos digitar devolve o texto pela metade. Retorna o ultimo texto lido."""
+    ultimo = [""]
+
+    def cond():
+        ultimo[0] = win32.texto(h)
+        return ok(ultimo[0])
+    try:
+        win32.esperar(cond, timeout, descricao, intervalo=0.1)
+    except win32.TempoEsgotado:
+        raise RuntimeError(f"{descricao}: campo ficou {ultimo[0]!r}")
+    return ultimo[0]
 
 
 def so_digitos(s: str) -> str:
@@ -179,16 +199,31 @@ def abrir_secao(navbar_h, lista: str, item: str, pronto, descricao, timeout=8):
 
 
 # ------------------------------------------------------------------ grid DevExpress
+class Celula:
+    """Celula sintetica: coluna (x) vem do retangulo do cabecalho e linha (y) do retangulo da linha.
+    Nao le as celulas do grid pela acessibilidade (no RM de producao isso sao milhares de objetos)."""
+
+    def __init__(self, rect, fora):
+        self.rect = rect
+        self.fora_da_tela = fora
+
+    @property
+    def centro(self):
+        l, t, r, b = self.rect
+        return ((l + r) // 2, (t + b) // 2)
+
+
 class LinhaGrid:
-    def __init__(self, no, headers):
+    def __init__(self, no, headers, cab_rects, area):
         self.no = no
         self.valores = (no.valor or "").split(";")
         self.headers = headers
         self.celulas = {}
-        for c in no.filhos():
-            n = c.nome
-            if " linha " in n:
-                self.celulas[n.rsplit(" linha ", 1)[0]] = c
+        l, t, r, b = no.rect
+        linha_fora = no.fora_da_tela or b <= area[1] or t >= area[3]
+        for nome, (hl, ht, hr, hb, hfora) in cab_rects.items():
+            fora = linha_fora or hfora or hr <= area[0] or hl >= area[2]
+            self.celulas[nome] = Celula((max(hl, area[0]), t, min(hr, area[2]), b), fora)
 
     def get(self, coluna):
         i = self.headers.index(coluna)
@@ -203,16 +238,59 @@ class LinhaGrid:
         return v[i] if i < len(v) else ""
 
 
+def _filhos_leve(no, descricao):
+    """Le SO os filhos diretos de um no (1 chamada), com o mesmo limite de seguranca."""
+    t0 = time.perf_counter()
+    r = uia_min.reler(no, uia_min.ESCOPO_ELEMENTO | uia_min.ESCOPO_FILHOS)
+    dt = time.perf_counter() - t0
+    if dt >= 0.5:
+        print(f"      (leitura UIA {dt:.1f}s: {descricao})", flush=True)
+    if dt > 10.0:
+        raise uia_min.RmLento(f"leitura UIA levou {dt:.1f}s ({descricao}): RM sobrecarregado, parando")
+    return r
+
+
 def ler_grid(grid_h):
-    """Uma leitura em cache do grid (cabecalho + linhas visiveis). Nao rola, nao clica."""
-    arv = uia_min.ler_arvore(grid_h, limite_s=10.0)
-    cab = arv.filho(nome="Cabeçalho")
-    headers = [f.nome for f in cab.filhos()] if cab else []
-    painel = arv.filho(nome="Painel de dados")
+    """Leitura LEVE do grid: so cabecalhos (nome + posicao) e linhas (valor com todas as colunas
+    separadas por ';' + posicao). Sem ler celula por celula. Nao rola, nao clica."""
+    raiz = uia_min.ler_arvore(grid_h, uia_min.ESCOPO_ELEMENTO | uia_min.ESCOPO_FILHOS, limite_s=10.0)
+    cab = raiz.filho(nome="Cabeçalho")
+    painel = raiz.filho(nome="Painel de dados")
+    headers, cab_rects = [], {}
+    if cab:
+        for h in _filhos_leve(cab, "cabecalho do grid").filhos():
+            headers.append(h.nome)
+            l, t, r, b = h.rect
+            cab_rects.setdefault(h.nome, (l, t, r, b, h.fora_da_tela))
     linhas = []
+    area = painel.rect if painel else raiz.rect
     if painel:
-        linhas = [LinhaGrid(r, headers) for r in painel.filhos() if r.tipo == uia_min.T_LISTITEM]
-    return headers, linhas, (painel.rect if painel else arv.rect)
+        for r in _filhos_leve(painel, "linhas do grid").filhos():
+            if r.tipo == uia_min.T_LISTITEM:
+                linhas.append(LinhaGrid(r, headers, cab_rects, area))
+    return headers, linhas, area
+
+
+def rolar_pagina(grid_h) -> bool:
+    """Desce uma pagina do grid pelo botao 'Pagina abaixo' da barra de rolagem vertical (como o v1).
+    Le so a barra (controle pequeno). Retorna False se nao ha barra (tudo visivel) ou se o valor da
+    barra nao mudou (fim do grid). PgDn com foco via acessibilidade nao rola de forma confiavel."""
+    sb = uia_min.mapa_nomes(grid_h, {"Vertical"}).get("Vertical")
+    if not sb:
+        return False
+    arv = uia_min.ler_arvore(sb)
+    antes = arv.valor
+    btn = arv.busca(lambda n: n.tipo == uia_min.T_BUTTON and n.nome in ("Página abaixo", "Page down", "Pagina abaixo"))
+    if btn is None:
+        return False
+    btn.invocar()
+    try:
+        win32.esperar(lambda: uia_min.ler_arvore(sb, uia_min.ESCOPO_ELEMENTO).valor != antes, 3,
+                      "grid rolar", intervalo=0.15)
+    except win32.TempoEsgotado:
+        return False
+    time.sleep(0.2)  # deixa o grid redesenhar as linhas
+    return True
 
 
 def exigir_colunas(headers, colunas, grid_desc):

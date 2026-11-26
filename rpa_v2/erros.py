@@ -14,6 +14,14 @@ class ErroRMDuranteFaturamentoError(MovimentoNaoEncontradoError):
     """RM mostrou erro durante a confirmacao do movimento."""
 
 
+class ItemNaoEncontradoError(MovimentoNaoEncontradoError):
+    """v2: item do lote nao esta no 1.1.15. O lote falha (movimento cancelado) - nunca gerar parcial."""
+
+
+class ConferenciaFaturarError(MovimentoNaoEncontradoError):
+    """v2: conferencia final do Faturar falhou. Movimento NAO e confirmado (cancelado), lote ERRO."""
+
+
 class MovimentoEmFaturamentoError(MovimentoNaoEncontradoError):
     """Movimento bloqueado (em faturamento por outra sessao) - erro apos Receber."""
 

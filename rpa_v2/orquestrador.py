@@ -21,7 +21,7 @@ import time
 import w32 as win32  # noqa
 import uia_min
 from comum import ErroRM
-from erros import (ErroCriticoRMError, ErroRecebimentoRMError, ErroRMDuranteFaturamentoError,
+from erros import (ConferenciaFaturarError, ItemNaoEncontradoError, ErroCriticoRMError, ErroRecebimentoRMError, ErroRMDuranteFaturamentoError,
                    MovimentoEmFaturamentoError, MovimentoNaoEncontradoError)
 from etapas import confirmacao, faturar, inicio, itens, movimento
 from limpeza import fechar_rm, limpar_janelas
@@ -111,6 +111,23 @@ class OrquestradorV2:
                     continue
                 except ErroCriticoRMError:
                     raise
+                except uia_min.RmLento as exc:
+                    # RM sobrecarregado: nao e erro do lote. Devolve o lote para a fila, fecha as janelas
+                    # e encerra a execucao (seguir so empilharia lotes com o RM travando).
+                    self.logger.error("RECUPERACAO", "RM sobrecarregado (leitura de tela lenta); lote devolvido "
+                                      "para PENDENTE e execucao encerrada", lote_id=lote.lote_id,
+                                      filial=lote.filial, fornecedor=lote.cnpj_fornecedor,
+                                      movimento_origem=movimento_origem, payload={"erro": str(exc)})
+                    try:
+                        self.lotes.voltar_lote_pendente(lote.lote_id)
+                    except Exception:
+                        self.logger.exception("SUPABASE", "Falha ao devolver lote para PENDENTE",
+                                              lote_id=lote.lote_id)
+                    try:
+                        limpar_janelas(self.ctx, timeout=60)
+                    except Exception:
+                        pass
+                    raise RuntimeError(f"Execucao encerrada: RM sobrecarregado ({exc})") from exc
                 except Exception:
                     erros_inesperados += 1
                     self.logger.exception("FATURAMENTO",
@@ -229,6 +246,14 @@ class OrquestradorV2:
         elif isinstance(exc, ErroRMDuranteFaturamentoError):
             step_log = "FATURAMENTO"
             msg_log = "Erro RM durante faturamento; marcando lote como ERRO e itens como NAO FATURADO"
+        elif isinstance(exc, ConferenciaFaturarError):
+            step_log = "ITEM"
+            msg_log = ("Conferencia do Faturar falhou; movimento cancelado sem confirmar, lote ERRO e itens "
+                       "NAO FATURADO")
+        elif isinstance(exc, ItemNaoEncontradoError):
+            step_log = "ITEM"
+            msg_log = ("Itens do lote nao encontrados no movimento destino; movimento cancelado, lote ERRO e "
+                       "itens NAO FATURADO")
         else:
             step_log = "SELECAO"
             msg_log = "Movimentos nao encontrados na tabela RM; marcando lote como ERRO"

@@ -269,6 +269,12 @@ def radio_marcado(hwnd) -> bool:
         return False
 
 
+def ponto(x, y):
+    """POINT para IUIAutomation.ElementFromPoint (coordenadas fisicas de tela)."""
+    import ctypes.wintypes
+    return ctypes.wintypes.POINT(int(x), int(y))
+
+
 def focar_hwnd(hwnd):
     """Foco num controle pelo handle (1 chamada). Tambem ativa a janela dona."""
     IUIA.ElementFromHandle(hwnd).SetFocus()

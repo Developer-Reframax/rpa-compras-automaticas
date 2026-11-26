@@ -1,10 +1,12 @@
 # -*- coding: utf-8 -*-
 """Etapa movimento: cabecalho do 1.1.15 (fornecedor, entrega, comprador, pagamento, frete, justificativa)."""
+import time
+
 import w32 as win32  # noqa
 import uia_min
 import teclado
 from comum import (checar_dialogo, esperar_janela, frente, focar, digitar_campo, preencher_lookup,
-                   abrir_secao, texto_limpo, secao_aberta)
+                   abrir_secao, texto_limpo, secao_aberta, esperar_texto, so_digitos)
 from medidor import log
 
 
@@ -53,15 +55,35 @@ def movimento(ctx):
                      lote["cnpj_fornecedor"], "fornecedor")
 
     # Data de entrega: foco no DateTimePicker -> o RM cria um EDIT filho para digitacao.
+    # Em producao o RM as vezes descarta o que foi digitado se o EDIT ainda esta sendo preparado:
+    # espera o campo assentar, confere o texto digitado ANTES do Tab e repete ate 3 vezes.
     dtp = m["dtpDATAEXTRA2"]
-    focar(dtp)
-    edit = win32.esperar(lambda: next((c for c in win32.filhos(dtp, True) if "EDIT" in win32.classe(c)), 0),
-                         4, "campo de digitacao da data de entrega", intervalo=0.1)
-    digitar_campo(edit, lote["data_entrega"], tab=True)
-    lido = uia_min.ler_arvore(dtp, uia_min.ESCOPO_ELEMENTO).valor
-    ctx.med.marca("data de entrega", lido=lido)
-    if lido and lido != lote["data_entrega"]:
-        raise RuntimeError(f"data de entrega ficou {lido!r}, esperado {lote['data_entrega']!r}")
+    data = lote["data_entrega"]
+    ultimo = [""]
+
+    def data_ok():
+        ultimo[0] = uia_min.ler_arvore(dtp, uia_min.ESCOPO_ELEMENTO).valor
+        return ultimo[0] == data
+    for tentativa in range(1, 4):
+        focar(dtp)
+        edit = win32.esperar(lambda: next((c for c in win32.filhos(dtp, True) if "EDIT" in win32.classe(c)), 0),
+                             4, "campo de digitacao da data de entrega", intervalo=0.1)
+        time.sleep(0.4)
+        digitar_campo(edit, data, tab=False)
+        try:
+            win32.esperar(lambda: so_digitos(win32.texto(edit)) == so_digitos(data), 3, "data digitada", intervalo=0.1)
+        except win32.TempoEsgotado:
+            log(f"   data de entrega: texto digitado nao assentou (tentativa {tentativa}): {win32.texto(edit)!r}")
+            continue
+        teclado.atalho("tab")
+        try:
+            win32.esperar(data_ok, 4, "data de entrega gravada", intervalo=0.2)
+            break
+        except win32.TempoEsgotado:
+            log(f"   data de entrega nao gravou (tentativa {tentativa}): {ultimo[0]!r}")
+    else:
+        raise RuntimeError(f"data de entrega ficou {ultimo[0]!r}, esperado {data!r}")
+    ctx.med.marca("data de entrega", lido=ultimo[0], tentativa=tentativa)
 
     # Tabelas -> comprador
     abrir_secao(navbar, "Identificação", "Tabelas", _secao(mov, "Tabelas"), "secao Tabelas")
@@ -106,7 +128,6 @@ def movimento(ctx):
     if nome_comprador:
         texto_just = f"{texto_just} - Comprador: {nome_comprador.strip()}"
     digitar_campo(just, texto_just, tab=True)
-    if win32.texto(just).strip() != texto_just:
-        raise RuntimeError(f"justificativa ficou {win32.texto(just)!r}")
+    esperar_texto(just, lambda t: t.strip() == texto_just, 10, "justificativa completa")
     checar_dialogo(ctx, "cabecalho")
     ctx.med.marca("cabecalho completo")

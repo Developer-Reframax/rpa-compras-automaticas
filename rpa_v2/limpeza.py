@@ -13,19 +13,38 @@ from medidor import log
 TRECHO_PRINCIPAL = "TOTVS Linha RM"
 
 
-def _eh_principal(h):
-    return TRECHO_PRINCIPAL in win32.titulo(h) and "Window.8" in win32.classe(h)
+def _eh_principal(h, protegidas=()):
+    if h in protegidas:
+        return True
+    return TRECHO_PRINCIPAL in win32.texto(h, 2000) and "Window.8" in win32.classe(h)
 
 
-def janelas_extras(pid):
+def janelas_extras(pid, protegidas=()):
+    """Janelas a fechar. NUNCA inclui a principal (pelo handle guardado e pelo titulo) nem o login.
+    Janela cujo titulo nao pode ser lido (RM ocupado) e ignorada nesta rodada - nunca fechar no escuro."""
     res = []
     for h in win32.janelas_topo(pid):
-        if _eh_principal(h) or win32.titulo(h) == "TOTVS":  # principal e tela de login nunca sao fechadas
+        if h in protegidas:
             continue
-        if "Window.0" in win32.classe(h) and not win32.titulo(h):
+        t = win32.texto(h, 2000)
+        if "Window.0" in win32.classe(h) and not t:
             continue  # janela auxiliar oculta do WinForms
+        if not t and win32.classe(h) not in ("#32770", "#32768"):
+            continue  # titulo ilegivel agora: nao arrisca
+        if (TRECHO_PRINCIPAL in t and "Window.8" in win32.classe(h)) or t == "TOTVS":
+            continue
         res.append(h)
     return res
+
+
+def _texto_janela(h, limite=300):
+    partes = []
+    for c in win32.filhos(h, True):
+        if any(k in win32.classe(c) for k in ("STATIC", "EDIT", "Static", "Edit")):
+            t = win32.texto(c).strip()
+            if t:
+                partes.append(t)
+    return " | ".join(partes)[:limite]
 
 
 def _botao_para(msg, botoes):
@@ -42,10 +61,15 @@ def _botao_para(msg, botoes):
     return next(iter(botoes), None)
 
 
-def limpar_janelas(ctx, timeout=90.0) -> bool:
+def limpar_janelas(ctx, timeout=90.0, max_fechamentos=15) -> bool:
+    """Fecha o que sobrou de um lote. Limite de fechamentos: se o RM continuar abrindo janelas (ex.: 'Erro'
+    em loop), desiste e devolve False (o orquestrador trata como erro critico)."""
+    protegidas = {h for h in (getattr(ctx, "main", 0),) if h}
+    fechamentos = 0
+    vistas_texto = set()
     fim = time.perf_counter() + timeout
     while time.perf_counter() < fim:
-        extras = janelas_extras(ctx.pid)
+        extras = janelas_extras(ctx.pid, protegidas)
         if not extras:
             return True
         d = win32.dialogo_rm(ctx.pid)
@@ -77,8 +101,18 @@ def limpar_janelas(ctx, timeout=90.0) -> bool:
                 win32.bm_click(fechar)
                 time.sleep(0.8)
                 continue
+        if alvo in protegidas or _eh_principal(alvo, protegidas):
+            time.sleep(0.5)
+            continue
+        if fechamentos >= max_fechamentos:
+            log(f"   limpeza: limite de {max_fechamentos} fechamentos atingido; desistindo")
+            return False
+        if t not in vistas_texto:
+            vistas_texto.add(t)
+            log(f"   limpeza: janela {t!r} conteudo: {_texto_janela(alvo)!r}")
         log(f"   limpeza: fechando {t!r}")
         win32.user32.PostMessageW(alvo, win32.WM_CLOSE, 0, 0)
+        fechamentos += 1
         time.sleep(0.8)
     return False
 

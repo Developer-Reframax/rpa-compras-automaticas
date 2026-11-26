@@ -5,7 +5,7 @@ import time
 import w32 as win32  # noqa
 import uia_min
 import teclado
-from comum import (checar_dialogo, esperar_janela, frente, ler_grid, exigir_colunas, texto_limpo)
+from comum import (rolar_pagina, checar_dialogo, esperar_janela, frente, ler_grid, exigir_colunas, texto_limpo)
 from medidor import log
 from erros import MovimentoNaoEncontradoError
 
@@ -15,10 +15,11 @@ COL_X = "[x]"
 
 
 def _grid_da_visao(ctx):
-    g = uia_min.mapa_nomes(ctx.form_sol, {"MainView"}).get("MainView")
-    if not g:
-        raise RuntimeError("grid MainView da Solicitacao nao encontrado")
-    return g
+    try:
+        return win32.esperar(lambda: uia_min.mapa_nomes(ctx.form_sol, {"MainView"}).get("MainView"), 30,
+                             "grid MainView da Solicitacao", intervalo=0.5)
+    except win32.TempoEsgotado:
+        raise RuntimeError("grid MainView da Solicitacao nao encontrado em 30s")
 
 
 def _selecionado(v: str) -> bool:
@@ -48,16 +49,23 @@ def marcar(ctx):
             if cel is None:
                 raise RuntimeError(f"linha do movimento {mov} sem celula [x]")
             l, t, r, b = cel.rect
-            if b > area[3] - 2 or t < area[1]:
+            if cel.fora_da_tela or b > area[3] - 2 or t < area[1]:
                 continue  # linha cortada na borda: sera tratada na proxima pagina
-            for tentativa in range(3):
+            # Clique UNICO e espera. Um 2o clique so depois de reler a linha e confirmar que ficou
+            # desmarcada (clicar de novo no escuro DESMARCA, se o 1o clique tiver pegado com atraso).
+            for tentativa in range(2):
                 teclado.clicar(*cel.centro)
                 try:
-                    win32.esperar(lambda: _selecionado(ln.get_atual(COL_X)), 1.5, f"[x] do {mov}", intervalo=0.1)
+                    win32.esperar(lambda: _selecionado(ln.get_atual(COL_X)), 3, f"[x] do {mov}", intervalo=0.15)
                     marcados.add(mov)
                     break
                 except win32.TempoEsgotado:
-                    log(f"   [x] do {mov} nao marcou (tentativa {tentativa + 1})")
+                    _, relidas, _ = ler_grid(grid)
+                    atual = next((x for x in relidas if x.get(COL_MOV).lstrip("0") == mov), None)
+                    if atual is not None and _selecionado(atual.get(COL_X)):
+                        marcados.add(mov)
+                        break
+                    log(f"   [x] do {mov} continua desmarcado apos reler (tentativa {tentativa + 1})")
             else:
                 raise RuntimeError(f"nao consegui marcar o movimento {mov}")
         if marcados >= alvos:
@@ -66,9 +74,8 @@ def marcar(ctx):
         if assinatura == vistos_assinatura:
             break  # fim do grid
         vistos_assinatura = assinatura
-        uia_min.focar_hwnd(grid)
-        teclado.atalho("pgdn")
-        time.sleep(0.3)
+        if not rolar_pagina(grid):
+            break  # sem barra de rolagem ou ja no fim
     faltam = alvos - marcados
     ctx.qtd_marcados = len(marcados)
     if not marcados:
@@ -150,12 +157,6 @@ def wizard(ctx):
         a = uia_min.ler_arvore(grid)
         return a.busca(lambda n: n.nome.startswith("Código Row") and n.valor == destino)
 
-    cel = win32.esperar(celula_destino, 15, f"tipo {destino} no grid do wizard", intervalo=0.2)
-    # SEMPRE seleciona a linha do destino e confere a celula focada antes de executar
-    # (nao supor que a primeira linha esteja selecionada).
-    frente(jan)
-    teclado.clicar(*cel.centro)
-
     def focada_destino():
         try:
             f = uia_min.IUIA.GetFocusedElement()
@@ -164,9 +165,21 @@ def wizard(ctx):
             return (nome, valor) if nome.startswith("Código Row") and valor == destino else None
         except Exception:
             return None
-    try:
-        nome, _ = win32.esperar(focada_destino, 3, f"celula focada = {destino}", intervalo=0.1)
-    except win32.TempoEsgotado:
+
+    # SEMPRE seleciona a linha do destino e confere a celula focada antes de executar
+    # (nao supor que a primeira linha esteja selecionada). Ate 3 tentativas; sem conferencia, NAO executa.
+    nome = None
+    for tentativa in range(1, 4):
+        cel = win32.esperar(celula_destino, 15, f"tipo {destino} no grid do wizard", intervalo=0.2)
+        frente(jan)
+        teclado.clicar(*cel.centro)
+        try:
+            nome, _ = win32.esperar(focada_destino, 3, f"celula focada = {destino}", intervalo=0.1)
+            break
+        except win32.TempoEsgotado:
+            log(f"   wizard: {destino} nao ficou focado (tentativa {tentativa})")
+            time.sleep(0.5)
+    if nome is None:
         raise RuntimeError(f"wizard: nao consegui selecionar o tipo {destino}; NAO executei")
     ctx.med.marca("wizard: tipo destino selecionado e conferido", celula=nome)
     frente(jan)

@@ -125,11 +125,26 @@ def navegacao(ctx):
     def botao():
         a = uia_min.ler_arvore(rib)
         return a.busca(lambda n: n.tipo == uia_min.T_BUTTON and n.nome == "Solicitação de Compra")
-    b = win32.esperar(botao, 5, "botao Solicitacao de Compra", intervalo=0.2)
     # Clique de mouse: Invoke via UIA fica bloqueado enquanto o RM mostra a janela modal.
-    frente(ctx.main)
-    teclado.clicar(*b.centro)
-    esperar_janela(ctx, 15, "janela Solicitacao", exato=TITULO_SOL)
+    # Ate 3 tentativas (apos fechar um lote com erro o RM as vezes ignora o 1o clique).
+    for tentativa in range(1, 4):
+        aba = uia_min.ler_arvore(rib).busca(lambda n: n.tipo == uia_min.T_TABITEM and n.nome == "Compras")
+        if aba is not None:
+            try:
+                aba.selecionar()
+            except Exception:
+                pass
+        b = win32.esperar(botao, 5, "botao Solicitacao de Compra", intervalo=0.2)
+        frente(ctx.main)
+        teclado.clicar(*b.centro)
+        try:
+            esperar_janela(ctx, 15, "janela Solicitacao", exato=TITULO_SOL)
+            break
+        except win32.TempoEsgotado:
+            log(f"   tela Solicitacao nao abriu (tentativa {tentativa}); clicando de novo")
+            teclado.atalho("esc")
+    else:
+        raise win32.TempoEsgotado("janela Solicitacao nao abriu apos 3 tentativas")
     ctx.med.marca("ribbon: aba Compras + clique em Solicitacao de Compra")
 
 

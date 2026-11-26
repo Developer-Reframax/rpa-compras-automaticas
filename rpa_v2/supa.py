@@ -227,6 +227,10 @@ class LotesRpaRepository:
     def marcar_lote_em_processamento(self, lote_id: int) -> None:
         self._client.table(self._TABLE).update({"status": "EM PROCESSAMENTO"}).eq("id", lote_id).execute()
 
+    def voltar_lote_pendente(self, lote_id: int) -> None:
+        """v2: lote interrompido por RM sobrecarregado volta para a fila (nao e erro do lote)."""
+        self._client.table(self._TABLE).update({"status": "PENDENTE"}).eq("id", lote_id).execute()
+
     def marcar_lote_faturado(self, lote_id: int, numero_movimento: str) -> None:
         self._client.table(self._TABLE).update({
             "status": "FATURADO",
