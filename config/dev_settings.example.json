@@ -1,0 +1,10 @@
+﻿{
+  "RM_EXECUTABLE_PATH": "C:\\\\TOTVS\\\\RM.NET\\\\RM.exe",
+  "RM_USUARIO": "<usuario>",
+  "RM_SENHA": "<senha>",
+  "SUPABASE_URL": "https://<projeto>.supabase.co",
+  "SUPABASE_KEY": "<chave>",
+  "LOG_LEVEL": "INFO",
+  "LOG_FILE_PATH": "logs/rpa_rm_faturamento.log",
+  "TIMING_FACTOR": 2.5
+}

@@ -1,0 +1,14 @@
+﻿# Credenciais locais
+config/dev_settings.json
+.env
+
+# Python
+__pycache__/
+*.pyc
+
+# Logs
+logs/
+*.log
+
+# Claude Code local
+.claude/settings.local.json

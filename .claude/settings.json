@@ -1,0 +1,20 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\garibaldi.neto\\\\rpapedidosautomaticos\\\\rpa-pedidos-automaticos\\\\rpa_rm_faturamento\" -Recurse -Directory)",
+      "Bash(Select-Object FullName)",
+      "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\garibaldi.neto\\\\rpapedidosautomaticos\\\\rpa-pedidos-automaticos\\\\rpa_rm_faturamento\" -File)",
+      "Bash(Select-Object Name)",
+      "Bash(Get-ChildItem -Path \"c:\\\\Users\\\\garibaldi.neto\\\\rpapedidosautomaticos\\\\rpa-pedidos-automaticos\\\\rpa_rm_faturamento\" -Recurse -File -Include \"*.py\")",
+      "Bash(ConvertTo-Json -Depth 10)",
+      "PowerShell(Get-ScheduledTask | Where-Object { $_.State -ne 'Disabled' } | Where-Object { \\($_.Triggers | Where-Object { $_.CimClass.CimClassName -match 'BootTrigger|LogonTrigger' }\\) } | Select-Object TaskName, TaskPath, State | Format-Table -AutoSize)",
+      "PowerShell(Write-Output \"=== HKLM Run ===\"; Get-ItemProperty \"HKLM:\\\\SOFTWARE\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Run\" -ErrorAction SilentlyContinue | Format-List; Write-Output \"=== HKCU Run ===\"; Get-ItemProperty \"HKCU:\\\\SOFTWARE\\\\Microsoft\\\\Windows\\\\CurrentVersion\\\\Run\" -ErrorAction SilentlyContinue | Format-List; Write-Output \"=== Startup folder \\(user\\) ===\"; Get-ChildItem \"$env:APPDATA\\\\Microsoft\\\\Windows\\\\Start Menu\\\\Programs\\\\Startup\" -ErrorAction SilentlyContinue | Select-Object Name; Write-Output \"=== Startup folder \\(common\\) ===\"; Get-ChildItem \"$env:ProgramData\\\\Microsoft\\\\Windows\\\\Start Menu\\\\Programs\\\\Startup\" -ErrorAction SilentlyContinue | Select-Object Name)",
+      "PowerShell(quser 2>$null)",
+      "PowerShell(qwinsta 2>$null)",
+      "PowerShell(Write-Output \"=== Usuario atual ===\"; whoami; Write-Output \"\"; Write-Output \"=== E administrador? ===\"; \\([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent\\(\\)\\).IsInRole\\([Security.Principal.WindowsBuiltinRole]::Administrator\\); Write-Output \"\"; Write-Output \"=== Grupos relevantes ===\"; whoami /groups | Select-String -Pattern \"Administrators|Remote Desktop|SYSTEM|High Mandatory\")"
+    ],
+    "additionalDirectories": [
+      "C:\\RPA"
+    ]
+  }
+}
