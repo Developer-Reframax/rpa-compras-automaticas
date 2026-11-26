@@ -100,16 +100,34 @@ def _form_solicitacao(ctx):
     return 0
 
 
+PREFIXOS_ABAS_RESIDUAIS = ("Ordem de Compra (Gestão Compras)", TITULO_SOL + " - Filial")
+
+
+def fechar_abas_residuais(ctx, timeout=15):
+    """Fecha as abas MDI 'Ordem de Compra ...' e 'Solicitacao de Compras ... - Filial' da janela principal."""
+    abas = []
+    for mdi in [c for c in win32.filhos(ctx.main) if "MDICLIENT" in win32.classe(c)]:
+        for f in win32.filhos_diretos(mdi):
+            if win32.titulo(f).startswith(PREFIXOS_ABAS_RESIDUAIS):
+                abas.append(f)
+    for f in abas:
+        log(f"   fechando aba residual: {win32.titulo(f)[:60]!r}")
+        win32.user32.PostMessageW(f, win32.WM_CLOSE, 0, 0)
+    if abas:
+        def fechadas():
+            checar_dialogo(ctx, "fechar abas residuais")
+            return all(not win32.existe(f) or not win32.visivel(f) for f in abas)
+        win32.esperar(fechadas, timeout, "fechar abas residuais", intervalo=0.2)
+    return len(abas)
+
+
 def navegacao(ctx):
     ctx.main = ctx.main or janela_principal(ctx)
     if not ctx.main:
         raise RuntimeError("janela principal do RM nao encontrada")
-    # Fecha a visao antiga da Solicitacao (se houver) para comecar limpo, como o v1.
-    antigo = _form_solicitacao(ctx)
-    if antigo:
-        log("   fechando visao antiga da Solicitacao de Compras")
-        win32.user32.PostMessageW(antigo, win32.WM_CLOSE, 0, 0)
-        win32.esperar(lambda: not win32.existe(antigo) or not win32.visivel(antigo), 10, "fechar visao antiga")
+    # Fecha as abas residuais (como o v1 fechar_abas_tabcontrol): visoes de "Ordem de Compra" que o RM abre
+    # para cada movimento gerado e a visao antiga da "Solicitacao de Compras". So Win32 (WM_CLOSE).
+    fechar_abas_residuais(ctx)
 
     if win32.achar_janela(ctx.pid, exato=TITULO_SOL):
         log("   tela Solicitacao ja aberta")
