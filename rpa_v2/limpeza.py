@@ -132,7 +132,9 @@ def fechar_rm(process_name="RM.exe", exe=None, timeout=10.0) -> int:
             return os.path.normcase(p.info.get("exe") or "") == os.path.normcase(os.path.abspath(exe))
         except Exception:
             return False
-    procs = [p for p in psutil.process_iter(attrs=["name", "exe"]) if eh_alvo(p)]
+    minha = win32.sessao_atual()
+    procs = [p for p in psutil.process_iter(attrs=["name", "exe"])
+             if eh_alvo(p) and win32.sessao_do_processo(p.pid) == minha]
     for p in procs:
         try:
             p.terminate()

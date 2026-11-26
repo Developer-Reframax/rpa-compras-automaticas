@@ -112,6 +112,18 @@ def thread_da_janela(h) -> int:
     return user32.GetWindowThreadProcessId(h, None)
 
 
+def sessao_do_processo(pid: int) -> int:
+    """Sessao do Windows (Terminal Services) de um processo; -1 se nao der para ler."""
+    sid = w.DWORD()
+    if kernel32.ProcessIdToSessionId(int(pid), ctypes.byref(sid)):
+        return sid.value
+    return -1
+
+
+def sessao_atual() -> int:
+    return sessao_do_processo(kernel32.GetCurrentProcessId())
+
+
 # ---------------------------------------------------------------- enumeracao
 def janelas_topo(pid: int, so_visiveis: bool = True):
     res = []

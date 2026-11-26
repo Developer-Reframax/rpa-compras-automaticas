@@ -29,11 +29,14 @@ def _mesmo_exe(a, b):
 def achar_pid(processo="RM.exe", exe=None):
     """PID do RM. Com exe, so aceita o processo daquele caminho (homologacao e producao tem o mesmo
     nome RM.exe: nunca faturar no RM errado)."""
+    minha = win32.sessao_atual()
     for p in psutil.process_iter(["name", "exe"]):
         if (p.info["name"] or "").lower() != processo.lower():
             continue
         if exe and not _mesmo_exe(p.info.get("exe") or "", exe):
             continue
+        if win32.sessao_do_processo(p.pid) != minha:
+            continue  # RM de outra sessao: as janelas dele nao sao visiveis daqui
         return p.pid
     return 0
 
