@@ -212,7 +212,7 @@ class RmLento(RuntimeError):
     """Consulta de acessibilidade lenta demais: parar para nao sobrecarregar o RM."""
 
 
-LIMITE_NOME_S = 1.5
+LIMITE_NOME_S = 4.0
 _NOMES = {}  # hwnd -> (Name, AutomationId). Nome de controle WinForms nao muda durante a vida do hwnd.
 
 

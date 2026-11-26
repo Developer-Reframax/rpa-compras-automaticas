@@ -8,7 +8,7 @@ import w32 as win32  # noqa
 import uia_min
 import teclado
 from config_v2 import num_br
-from comum import (limpar_campo, rolar_pagina, checar_dialogo, frente, focar, digitar_campo, abrir_secao, ler_grid,
+from comum import (esperar_rm_ocioso, limpar_campo, rolar_pagina, checar_dialogo, frente, focar, digitar_campo, abrir_secao, ler_grid,
                    exigir_colunas, so_digitos, esperar_texto)
 from etapas.movimento import _mov
 from medidor import log
@@ -248,7 +248,25 @@ def _cabecalho_grid(grid):
     return {"colunas": [(h.nome, h.rect) for h in cab.filhos()], "painel": painel.rect}
 
 
-def _celula_no_ponto(x, y):
+_RM_PID = 0  # definido em itens(): usado para esperar o RM ficar ocioso antes das consultas
+
+
+def _celula_no_ponto(x, y, tentativas=3):
+    """Hit-test resiliente: espera o RM ocioso e, se a consulta estourar o tempo (RM ocupado recalculando),
+    espera e tenta de novo em vez de derrubar o lote."""
+    ultimo = None
+    for i in range(tentativas):
+        esperar_rm_ocioso(_RM_PID, timeout=15 if i == 0 else 30)
+        try:
+            return _celula_no_ponto_1(x, y)
+        except Exception as e:  # COMError de timeout do provedor de acessibilidade do RM
+            ultimo = e
+            log(f"   consulta na tela estourou o tempo (tentativa {i + 1}/{tentativas}); aguardando o RM")
+            time.sleep(2.0 * (i + 1))
+    raise RuntimeError(f"RM nao respondeu a consulta na tela apos {tentativas} tentativas: {ultimo!r}")
+
+
+def _celula_no_ponto_1(x, y):
     """(coluna, linha, valor_da_linha, retangulo) da celula no ponto da tela. 1 hit-test + 2 leituras."""
     f = uia_min.IUIA.ElementFromPoint(uia_min.ponto(x, y))
     nome = f.CurrentName or ""
@@ -370,8 +388,10 @@ def _digitar_na_caixa(caixa, texto):
 
 
 def _pesquisar_codigo(caixa, codigo):
+    esperar_rm_ocioso(_RM_PID)
     _digitar_na_caixa(caixa, codigo)
     time.sleep(0.9)
+    esperar_rm_ocioso(_RM_PID)
 
 
 def _fechar_pesquisa(caixa):
@@ -762,6 +782,8 @@ def _preencher_item(ctx, ji, it):
 
 
 def itens(ctx):
+    global _RM_PID
+    _RM_PID = ctx.pid
     alvos = [dict(i) for i in ctx.lote["itens"]]
     mov = _mov(ctx)
     hj = _janela_item(ctx)

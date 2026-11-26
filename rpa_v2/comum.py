@@ -72,6 +72,26 @@ def frente(h):
     return win32.esperar(lambda: win32.em_primeiro_plano(h), 3, "janela em primeiro plano")
 
 
+# ------------------------------------------------------------------ RM ocioso
+def esperar_rm_ocioso(pid, limite_pct=35.0, timeout=20.0, janela_s=0.3):
+    """Espera a CPU do processo RM baixar (o RM terminou de processar a acao anterior) antes de consultar.
+    Medido pelo sistema (psutil), sem acessibilidade. Nao falha: no pior caso segue apos o timeout."""
+    if not pid:
+        return
+    try:
+        import psutil
+        p = psutil.Process(pid)
+        p.cpu_percent(None)
+        fim = time.perf_counter() + timeout
+        while time.perf_counter() < fim:
+            time.sleep(janela_s)
+            if p.cpu_percent(None) < limite_pct:
+                return
+        log(f"   RM continua ocupado apos {timeout:.0f}s; seguindo")
+    except Exception:
+        pass
+
+
 # ------------------------------------------------------------------ foco e digitacao
 def focar(h, timeout=2.0):
     """Leva o foco ao controle (UIA SetFocus pelo handle) e confirma pelo Windows."""
