@@ -388,10 +388,10 @@ def _digitar_na_caixa(caixa, texto):
 
 
 def _pesquisar_codigo(caixa, codigo):
-    esperar_rm_ocioso(_RM_PID)
+    # Sem esperar RM ocioso: nesta fase o RM fica ocupado o tempo todo (medido), a espera so atrasava.
+    # O resultado da pesquisa e conferido pelos pixels (com nova leitura se ainda nao apareceu).
     _digitar_na_caixa(caixa, codigo)
-    time.sleep(0.9)
-    esperar_rm_ocioso(_RM_PID)
+    time.sleep(1.0)
 
 
 def _fechar_pesquisa(caixa):
@@ -781,6 +781,209 @@ def _preencher_item(ctx, ji, it):
     ctx.med.marca(f"item salvo {it['cod_prd']}", valor_total=win32.texto(total_h))
 
 
+# ================================================================== grid de itens por PIXELS (sem acessibilidade)
+import json as _json
+import os as _os
+
+import pixels
+
+_CALIB = _os.path.join(_os.path.dirname(_os.path.dirname(_os.path.abspath(__file__))), "saida",
+                       "calib_grid_itens.json")
+LIMIAR_MARCADO = 5   # pixels escuros no miolo do checkbox para considerar marcado
+
+
+def _cab_rel(cab, gx, gy):
+    return {"colunas": [(n, [r[0] - gx, r[1] - gy, r[2] - gx, r[3] - gy]) for n, r in cab["colunas"]],
+            "painel": [cab["painel"][0] - gx, cab["painel"][1] - gy, cab["painel"][2] - gx, cab["painel"][3] - gy]}
+
+
+def _cab_abs(rel, gx, gy):
+    return {"colunas": [(n, (r[0] + gx, r[1] + gy, r[2] + gx, r[3] + gy)) for n, r in rel["colunas"]],
+            "painel": (rel["painel"][0] + gx, rel["painel"][1] + gy, rel["painel"][2] + gx, rel["painel"][3] + gy)}
+
+
+def _caixa_pesquisa_win32(grid):
+    """EDIT visivel dentro do grid (o painel de pesquisa). So Win32."""
+    return next((c for c in win32.filhos(grid, True) if "EDIT" in win32.classe(c)), 0)
+
+
+def _abrir_pesquisa_win32(grid, cab_sem):
+    caixa = _caixa_pesquisa_win32(grid)
+    if caixa:
+        return caixa
+    teclado.clicar(_x_col(cab_sem, COL_SEQ), _y_linha(cab_sem, 1, 18))  # foco no grid (nunca no Faturar)
+    time.sleep(0.25)
+    teclado.atalho("ctrl+f")
+    return win32.esperar(lambda: _caixa_pesquisa_win32(grid), 5, "painel de pesquisa do grid (Ctrl+F)", intervalo=0.2)
+
+
+def _calibracao(ctx, grid):
+    """Posicoes do cabecalho (sem/com painel de pesquisa) e altura da linha, relativas ao grid. Medidas UMA
+    vez (acessibilidade) e salvas; nos lotes seguintes so Win32. Recalibra se o tamanho do grid mudar."""
+    gl, gt, gr, gb = win32.rect(grid)
+    tam = [gr - gl, gb - gt]
+    try:
+        d = _json.load(open(_CALIB, encoding="utf-8"))
+        if d.get("tam") == tam:
+            return _cab_abs(d["sem"], gl, gt), _cab_abs(d["com"], gl, gt), d["altura"]
+    except Exception:
+        pass
+    log("   calibrando posicoes do grid de itens (uma vez)")
+    cab_sem = _cabecalho_grid(grid)
+    exigir_colunas([n for n, _ in cab_sem["colunas"]], [COL_SEQ, COL_PRD, COL_FAT], "de itens")
+    caixa = _abrir_pesquisa_win32(grid, cab_sem)
+    time.sleep(0.5)
+    cab_com = _cabecalho_grid(grid)
+    altura = _altura_linha(cab_com)
+    _fechar_pesquisa(caixa)
+    _os.makedirs(_os.path.dirname(_CALIB), exist_ok=True)
+    _json.dump({"tam": tam, "sem": _cab_rel(cab_sem, gl, gt), "com": _cab_rel(cab_com, gl, gt), "altura": altura},
+               open(_CALIB, "w", encoding="utf-8"))
+    ctx.med.marca("calibracao do grid de itens", tam=tam, altura=altura)
+    return cab_sem, cab_com, altura
+
+
+def _faturar_px(cab, k, altura):
+    return pixels.checkbox(_x_col(cab, COL_FAT), _y_linha(cab, k, altura))
+
+
+def _faturar_px_estavel(cab, k, altura, min_espera=0.8, leituras=3, timeout=4.0):
+    """Le o checkbox so depois que ele PARAR de mudar (mesmo valor em 'leituras' seguidas, apos uma espera
+    minima). Depois da pesquisa o RM redesenha a coluna Produto antes da Faturar: ler cedo mostra o
+    checkbox da linha ANTERIOR."""
+    time.sleep(min_espera)
+    fim = time.perf_counter() + timeout
+    hist = []
+    while True:
+        v = _faturar_px(cab, k, altura)
+        hist.append(v[0])
+        if len(hist) >= leituras and len(set(hist[-leituras:])) == 1:
+            return v
+        if time.perf_counter() >= fim:
+            return v
+        time.sleep(0.3)
+
+
+def _linha_existe(cab, k, altura):
+    l, t, r, b = dict(cab["colunas"])[COL_PRD]
+    return pixels.tem_conteudo(l + 3, r - 3, _y_linha(cab, k, altura))
+
+
+def _assinatura_linha(cab, k, altura):
+    l, t, r, b = dict(cab["colunas"])[COL_PRD]
+    return pixels.assinatura(l + 3, r - 3, _y_linha(cab, k, altura))
+
+
+def _pesquisar_e_esperar(caixa, cod, cab, altura, ass_anterior, mesmo_produto, timeout=6.0):
+    """Pesquisa e so retorna quando a 1a linha MUDOU em relacao ao item anterior (assinatura dos pixels do
+    Produto) e ficou ESTAVEL em duas leituras. Sem isso, a tela ainda mostra a pesquisa anterior e o clique
+    cairia na linha errada. Retorna a nova assinatura; levanta erro se a linha nao mudar."""
+    _digitar_na_caixa(caixa, cod)
+    fim = time.perf_counter() + timeout
+    ultima = None
+    while time.perf_counter() < fim:
+        time.sleep(0.35)
+        a = _assinatura_linha(cab, 1, altura)
+        mudou = mesmo_produto or a != ass_anterior
+        if mudou and a == ultima and any(a):
+            return a
+        ultima = a
+    raise RuntimeError(f"pesquisa de {cod}: a 1a linha do grid nao mudou/estabilizou em {timeout:.0f}s")
+
+
+def marcar_faturar_pixels(ctx, grid, alvos):
+    """Pesquisa cada produto (o item vira a 1a linha), confere pelos PIXELS que a linha existe e que o
+    checkbox passou de desmarcado para marcado. Depois CONFERE de novo todos os itens. Sem acessibilidade
+    no grid (alem da calibracao unica). Item nao encontrado ou nao marcado: o lote FALHA."""
+    cab_sem, cab_com, altura = _calibracao(ctx, grid)
+    caixa = _abrir_pesquisa_win32(grid, cab_sem)
+    time.sleep(0.6)
+    faltam = []
+    ocorr = {}
+    ass = _assinatura_linha(cab_com, 1, altura)   # 1a linha antes de pesquisar (lista sem filtro)
+    cod_ant = None
+    try:
+        for it in alvos:
+            cod = it["cod_prd"]
+            ocorr[cod] = ocorr.get(cod, 0) + 1
+            k = ocorr[cod]          # 2a ocorrencia do mesmo produto = 2a linha do resultado
+            try:
+                ass = _pesquisar_e_esperar(caixa, cod, cab_com, altura, ass, mesmo_produto=(cod == cod_ant))
+            except RuntimeError:
+                faltam.append(cod)
+                continue
+            cod_ant = cod
+            existe, px = _linha_existe(cab_com, k, altura)
+            if not existe:
+                time.sleep(1.0)     # filtro pode demorar a aplicar
+                existe, px = _linha_existe(cab_com, k, altura)
+            if not existe:
+                faltam.append(cod)
+                continue
+            # linha filtrada estavel (o RM pode ainda estar redesenhando a pesquisa)
+            ant = None
+            for _ in range(10):
+                cont = _linha_existe(cab_com, k, altura)[1]
+                if cont == ant:
+                    break
+                ant = cont
+                time.sleep(0.3)
+            antes, fundo = _faturar_px_estavel(cab_com, k, altura)
+            if antes >= LIMIAR_MARCADO:
+                log(f"   Faturar ja marcado: {cod} (linha {k}, px={antes}, fundo={fundo})")
+                it["_marcado"] = True
+                continue
+            depois = antes
+            for tentativa in range(1, 4):
+                teclado.clicar(_x_col(cab_com, COL_FAT), _y_linha(cab_com, k, altura))      # UM clique
+                time.sleep(0.25)
+                teclado.clicar(_x_col(cab_com, COL_SEQ), _y_linha(cab_com, k, altura))      # grava
+                # confere por ate 3s (o RM ocupado pode demorar a redesenhar o checkbox)
+                fim = time.perf_counter() + 3.0
+                while True:
+                    time.sleep(0.3)
+                    depois, fundo = _faturar_px(cab_com, k, altura)
+                    if depois >= LIMIAR_MARCADO or time.perf_counter() >= fim:
+                        break
+                log(f"   Faturar {cod} linha {k} (tentativa {tentativa}): antes={antes} depois={depois} fundo={fundo}")
+                if depois >= LIMIAR_MARCADO:
+                    it["_marcado"] = True
+                    break
+                if depois != antes:
+                    break   # mudou mas nao passou do limiar: nao clicar de novo no escuro
+                # continuou desmarcado por 3s: o clique comprovadamente nao pegou -> pode clicar de novo
+            if not it.get("_marcado"):
+                raise RuntimeError(f"nao consegui comprovar o Faturar do item {cod} (pixels {antes}->{depois})")
+        if not faltam:
+            # CONFERENCIA (trava) antes de editar os itens: pesquisa cada item e exige o checkbox marcado.
+            ocorr2, sem_faturar = {}, []
+            for it in alvos:
+                cod = it["cod_prd"]
+                ocorr2[cod] = ocorr2.get(cod, 0) + 1
+                try:
+                    ass = _pesquisar_e_esperar(caixa, cod, cab_com, altura, ass, mesmo_produto=(cod == cod_ant))
+                except RuntimeError:
+                    sem_faturar.append((cod, ocorr2[cod], "linha nao mudou"))
+                    continue
+                cod_ant = cod
+                existe, _ = _linha_existe(cab_com, ocorr2[cod], altura)
+                px, _ = _faturar_px_estavel(cab_com, ocorr2[cod], altura)
+                if not existe or px < LIMIAR_MARCADO:
+                    sem_faturar.append((cod, ocorr2[cod], px))
+            ctx.med.marca("conferencia Faturar (pixels)", itens=len(alvos), sem_faturar=sem_faturar)
+            if sem_faturar:
+                raise ConferenciaFaturarError(f"Conferencia do Faturar falhou; movimento NAO confirmado: {sem_faturar}")
+            log(f"   conferencia OK: {len(alvos)} item(ns) do lote com Faturar marcado (pixels)")
+    finally:
+        _fechar_pesquisa(caixa)
+    if faltam:
+        for c in faltam:
+            ctx.log_warning("ITEM", "Produto nao encontrado no grid apos varredura completa", item=c)
+        raise ItemNaoEncontradoError(f"Itens do lote nao encontrados no movimento 1.1.15: {faltam}")
+    ctx.med.marca("Faturar marcado (pixels)", itens=[i["cod_prd"] for i in alvos])
+    return cab_sem
+
+
 def itens(ctx):
     global _RM_PID
     _RM_PID = ctx.pid
@@ -796,7 +999,7 @@ def itens(ctx):
         m = uia_min.mapa_nomes(mov, {"NavBar"})
         grid = abrir_secao(m["NavBar"], "Itens", "Itens",
                            lambda: uia_min.mapa_nomes(mov, {"MainView"}).get("MainView"), "grid de itens")
-        cab_sem, cab_com = marcar_faturar_pesquisa(ctx, grid, alvos)
+        cab_sem = marcar_faturar_pixels(ctx, grid, alvos)
         # Abre o primeiro item: foco no grid (Nº Sequencial da 1a linha) -> topo (Ctrl+Home) -> Ctrl+Enter.
         teclado.clicar(_x_col(cab_sem, COL_SEQ), _y_linha(cab_sem, 1, 18))
         time.sleep(0.25)
@@ -805,17 +1008,18 @@ def itens(ctx):
         teclado.atalho("ctrl+enter")
         hj = win32.esperar(lambda: _janela_item(ctx), 20, "janela do item")
     ji = JanelaItem(hj)
-    # Chave de navegacao: Nº Sequencial da linha atribuida (o titulo da janela traz a seq).
-    pendentes = {i["_seq_rm"]: i for i in alvos if i.get("_seq_rm")}
-    if retomando:  # sem grid lido: casa por seq/codigo, descartando os que ficaram para tras
+    # Chave de navegacao: CODIGO do produto (o titulo da janela do item traz seq e codigo).
+    # Mesmo produto repetido no lote: uma ocorrencia por linha, na ordem do grid.
+    pendentes = {}
+    for it in alvos:
+        pendentes.setdefault(it["cod_prd"], []).append(it)
+    if retomando:  # descarta os que ficaram para tras (seq informada menor que a atual)
         mt0 = RE_TITULO_ITEM.match(win32.esperar(lambda: win32.titulo(hj), 5, "titulo do item"))
         seq_atual = int(mt0.group(1)) if mt0 else 0
-        pendentes = {}
-        for it in alvos:
-            if it.get("seq") and int(it["seq"]) < seq_atual:
-                log(f"   retomada: item {it['seq']} {it['cod_prd']} ja ficou para tras, considerado feito")
-            else:
-                pendentes[str(it.get("seq") or it["cod_prd"])] = it
+        for cod in list(pendentes):
+            pendentes[cod] = [it for it in pendentes[cod] if not (it.get("seq") and int(it["seq"]) < seq_atual)]
+            if not pendentes[cod]:
+                del pendentes[cod]
     vistos = []
     while True:
         titulo = win32.esperar(lambda: win32.titulo(hj), 5, "titulo do item")
@@ -826,11 +1030,10 @@ def itens(ctx):
         if (seq, cod) in vistos:
             break
         vistos.append((seq, cod))
-        chave = seq if seq in pendentes else (cod if retomando and cod in pendentes else None)
-        if chave is not None:
-            it = pendentes.pop(chave)
-            if it["cod_prd"] != cod:
-                raise RuntimeError(f"item {seq}: produto {cod} diferente do esperado {it['cod_prd']}")
+        if cod in pendentes:
+            it = pendentes[cod].pop(0)
+            if not pendentes[cod]:
+                del pendentes[cod]
             log(f"   item {seq} {cod}: preenchendo")
             ctx.log_info("ITEM", "Processando item", item=cod)
             _preencher_item(ctx, ji, it)
@@ -855,7 +1058,7 @@ def itens(ctx):
     win32.esperar(lambda: not win32.existe(hj) or not win32.visivel(hj), 15, "fechar janela do item")
     if pendentes:
         raise RuntimeError("itens marcados no grid mas nao alcancados na navegacao: "
-                           f"{[(k, v['cod_prd']) for k, v in pendentes.items()]}")
+                           f"{[(k, len(v)) for k, v in pendentes.items()]}")
     ctx.med.marca("itens percorridos", vistos=vistos)
     if not retomando:
         pass  # conferencia do Faturar ja feita na marcacao (antes de editar os itens)
